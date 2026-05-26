@@ -1,0 +1,1 @@
+Analyze the provided files for OWASP vulnerabilities and return JSON.

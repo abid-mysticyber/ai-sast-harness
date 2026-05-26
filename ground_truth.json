@@ -1,0 +1,6 @@
+{
+  "vulnerability": "Broken Access Control",
+  "cwe": "CWE-862",
+  "file": "app.py",
+  "function": "admin_dashboard"
+}
