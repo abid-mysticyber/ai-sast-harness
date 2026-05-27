@@ -1,88 +1,109 @@
+#!/usr/bin/env python
+
 import json
 import sys
 import time
 import requests
+import argparse
 from pathlib import Path
 
-MODEL = "qwen2.5-coder:7b"
-GROUND_TRUTH = "../ground_truth.json"
+DEFAULT_MODEL = "qwen2.5-coder:7b"
+DEFAULT_GROUND_TRUTH = "../ground_truth.json"
+DEFAULT_CONTEXT_WINDOW_SIZE = 2048
 
-if len(sys.argv) != 3:
-    print("Usage: python3 scan.py <repo_path> <num_ctx>")
-    print("Example: python3 scan.py ../apps/baseline 2048")
-    sys.exit(1)
+def main(argv=None):
+    if not argv:
+        argv = sys.argv
 
-REPO_VARIANT = sys.argv[1]
-NUM_CTX = int(sys.argv[2])
+    parser = argparse.ArgumentParser(prog='scan')
+    parser.add_argument('-m', '--model', dest='model', default=DEFAULT_MODEL)
+    parser.add_argument('-g', '--ground-truth', dest='ground_truth', default=DEFAULT_GROUND_TRUTH)
+    parser.add_argument('-c', '--context', type=int, dest='context_size', default=DEFAULT_CONTEXT_WINDOW_SIZE)
+    parser.add_argument(dest='repository', nargs='?')
 
-repo_path = Path(REPO_VARIANT)
-ground_truth = json.loads(Path(GROUND_TRUTH).read_text())
+    args = parser.parse_args()
+    if not args.model or not args.ground_truth:
+        print("Usage: python3 scan.py <repo_path> <num_ctx>")
+        print("Example: python3 scan.py ../apps/baseline 2048")
+        return 1
 
-combined = ""
+    repo_path = Path(args.repository)
+    ground_truth = json.loads(Path(args.ground_truth).read_text())
 
-for py_file in sorted(repo_path.glob("*.py")):
-    combined += f"\n=== BEGIN FILE: {py_file.name} ===\n"
-    combined += py_file.read_text()
-    combined += f"\n=== END FILE: {py_file.name} ===\n"
+    combined = ""
 
-prompt = f"""
-You are evaluating a small intentionally vulnerable Flask-style Python app.
+    for py_file in sorted(repo_path.glob("*.py")):
+        combined += f"\n=== BEGIN FILE: {py_file.name} ===\n"
+        combined += py_file.read_text()
+        combined += f"\n=== END FILE: {py_file.name} ===\n"
 
-Before analyzing vulnerabilities, list every file name you received in files_seen.
+    prompt = f"""
+    You are evaluating a small intentionally vulnerable Flask-style Python app.
 
-Your task:
-Find the single most important OWASP-style vulnerability in the code.
+    Before analyzing vulnerabilities, list every file name you received in files_seen.
 
-Important rules:
-- Do not invent vulnerabilities.
-- Do not report logging or observability as command injection unless an OS command is actually executed.
-- Focus on authorization, authentication, injection, path traversal, deserialization, and sensitive data exposure.
-- Return JSON only.
+    Your task:
+    Find the single most important OWASP-style vulnerability in the code.
 
-Expected JSON schema:
-{{
-  "files_seen": [],
-  "vulnerability_found": true,
-  "vulnerability_type": "",
-  "cwe": "",
-  "file": "",
-  "function": "",
-  "reason": "",
-  "confidence": 0
-}}
+    Important rules:
+    - Do not invent vulnerabilities.
+    - Do not report logging or observability as command injection unless an OS command is actually executed.
+    - Focus on authorization, authentication, injection, path traversal, deserialization, and sensitive data exposure.
+    - Return JSON only.
 
-Code:
-{combined}
-"""
+    Expected JSON schema:
+    {{
+      "files_seen": [],
+      "vulnerability_found": true,
+      "vulnerability_type": "",
+      "cwe": "",
+      "file": "",
+      "function": "",
+      "reason": "",
+      "confidence": 0
+    }}
 
-start = time.time()
+    Code:
+    {combined}
+    """
 
-response = requests.post(
-    "http://localhost:11434/api/generate",
-    json={
-        "model": MODEL,
+    start = time.time()
+    request = {
+        "model": args.model,
         "prompt": prompt,
         "stream": False,
         "options": {
             "temperature": 0,
-            "num_ctx": NUM_CTX
+            "num_ctx": args.context_size
         }
     }
-)
 
-duration = time.time() - start
-data = response.json()
+    response = requests.post(
+        "http://localhost:11434/api/generate",
+        json=request
+    )
 
-print("REPO_VARIANT:", REPO_VARIANT)
-print("NUM_CTX:", NUM_CTX)
+    duration = time.time() - start
+    data = response.json()
 
-print("\nMODEL RESPONSE:")
-print(data["response"])
+    #model_response = json.loads(data.get('response').replace('```json`', '').replace('```', ''))
+    output = {
+        'model': args.model,
+        'context_size': args.context_size,
+        'repository': args.repository,
+        'response': data.get('response'),
+        'metrics': {
+            'duration': round(duration, 2),
+            'prompt_eval_count': data.get('prompt_eval_count'),
+            'eval_count': data.get('eval_count'),
+            'context_window_exceeded': data.get('prompt_eval_count', 0) >= args.context_size
+        },
+        'ground_truth': ground_truth
+    }
 
-print("\nMETRICS:")
-print("duration_seconds:", round(duration, 2))
-print("prompt_eval_count:", data.get("prompt_eval_count"))
-print("eval_count:", data.get("eval_count"))
+    print(json.dumps(output, indent=2))
 
-print("\nGROUND TRUTH:")
-print(json.dumps(ground_truth, indent=2))
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())
