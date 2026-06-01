@@ -1,7 +1,7 @@
-
-#!/usr/bin/env python3
+#!/usr/bin/env python3"""
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -14,14 +14,14 @@ try:
 except Exception:
     TREE_SITTER_AVAILABLE = False
 
-def extract_with_tree_sitter(source: str, filename: str) -> dict:
+
+def extract_with_tree_sitter(source: str) -> dict:
     tree = parser.parse(bytes(source, "utf8"))
     root = tree.root_node
-    
     functions = []
     classes = []
     imports = []
-    
+
     def walk(node):
         if node.type == "function_definition":
             name_node = node.child_by_field_name("name")
@@ -43,18 +43,17 @@ def extract_with_tree_sitter(source: str, filename: str) -> dict:
             imports.append(node.text.decode())
         for child in node.children:
             walk(child)
-    
+
     walk(root)
     return {"functions": functions, "classes": classes, "imports": imports}
 
 
-def extract_simple(source: str, filename: str) -> dict:
-    """Fallback parser if tree-sitter unavailable."""
-    import re
+def extract_simple(source: str) -> dict:
+    """Fallback regex parser if tree-sitter is unavailable."""
     functions = []
     classes = []
     imports = []
-    
+
     for i, line in enumerate(source.splitlines(), 1):
         stripped = line.strip()
         if stripped.startswith("def "):
@@ -71,35 +70,53 @@ def extract_simple(source: str, filename: str) -> dict:
                 classes.append({"name": match.group(1), "line": i})
         elif stripped.startswith("import ") or stripped.startswith("from "):
             imports.append(stripped)
-    
+
     return {"functions": functions, "classes": classes, "imports": imports}
 
 
-def build_repo_map(repo_path: Path) -> dict:
-    repo_map = {}
+def build_repo_map(repo_path: Path, recursive: bool = False) -> dict:
+    """
+    Build a compressed map of all Python files in a repository.
     
-    for py_file in sorted(repo_path.glob("*.py")):
-        source = py_file.read_text()
-        
+    Args:
+        repo_path: Path to the repository root
+        recursive: If True, use rglob to find nested .py files.
+                   If False, only scan top-level files.
+    """
+    repo_map = {}
+
+    # Fix: use rglob for nested repos, glob for flat
+    glob_fn = repo_path.rglob if recursive else repo_path.glob
+    py_files = sorted(glob_fn("*.py"))
+
+    for py_file in py_files:
+        try:
+            source = py_file.read_text()
+        except Exception:
+            continue
+
         if TREE_SITTER_AVAILABLE:
-            extracted = extract_with_tree_sitter(source, py_file.name)
+            extracted = extract_with_tree_sitter(source)
         else:
-            extracted = extract_simple(source, py_file.name)
-        
-        repo_map[py_file.name] = {
+            extracted = extract_simple(source)
+
+        # Use relative path as key so nested files are identifiable
+        key = str(py_file.relative_to(repo_path)) if recursive else py_file.name
+
+        repo_map[key] = {
             "lines": len(source.splitlines()),
             "imports": extracted["imports"],
             "classes": [f"{c['name']} (line {c['line']})" for c in extracted["classes"]],
             "functions": [f"{f['name']}{f['params']} (line {f['line']})" for f in extracted["functions"]],
         }
-    
+
     return repo_map
 
 
 def format_repo_map(repo_map: dict) -> str:
     lines = ["Repository structure:\n"]
     for filename, info in repo_map.items():
-        lines.append(f"{'='*40}")
+        lines.append("=" * 40)
         lines.append(f"File: {filename} ({info['lines']} lines)")
         if info["imports"]:
             lines.append(f"  Imports: {', '.join(info['imports'][:5])}")
@@ -113,7 +130,8 @@ def format_repo_map(repo_map: dict) -> str:
 
 if __name__ == "__main__":
     repo_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
-    repo_map = build_repo_map(repo_path)
+    recursive = "--recursive" in sys.argv or "-r" in sys.argv
+    repo_map = build_repo_map(repo_path, recursive=recursive)
     print(format_repo_map(repo_map))
-    print("\nJSON output:")
+    print("\nJSON:")
     print(json.dumps(repo_map, indent=2))
