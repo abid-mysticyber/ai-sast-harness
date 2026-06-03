@@ -1,3 +1,4 @@
+
 cat > /home/research/ai-sast-harness/harness/run_retrieval.sh << 'EOF'
 #!/bin/sh
 MODELS="qwen2.5-coder:7b gemma3:12b"
